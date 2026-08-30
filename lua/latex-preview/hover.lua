@@ -262,13 +262,29 @@ local function place_under_cursor(win, source_win)
   -- "above"/"below" still track the cursor line, they just fix which side of
   -- it the popup sits on instead of letting fit decide. "top"/"bottom" pin to
   -- the window edge and ignore the cursor entirely.
+  local gap = tonumber((config.options.popup or {}).gap) or 0
+
+  -- Anchor to the equation, not the cursor line. A display block spans several
+  -- lines, and sitting just above the cursor still covers the rest of the
+  -- source the preview is for. Falls back to the cursor line for targets that
+  -- carry no range (plain text hovers).
+  local function eq_screen_row(edge)
+    local eq = current and current.eq
+    local lnum = eq and eq[edge]
+    if not lnum then return nil end
+    local okp, p = pcall(vim.fn.screenpos, source_win, lnum + 1, 1)
+    if okp and p and p.row > 0 then return p.row end
+    return nil
+  end
+
   if row_anchor == "above" then
-    -- bottom border ends up on screenpos.row - 2, i.e. the line above the cursor
-    row = screenpos.row - height - 1 - b
+    local anchor = eq_screen_row("start_row") or screenpos.row
+    row = anchor - height - 1 - b - gap
     if row < b then row = screenpos.row + b end -- no room above, fall back below
   elseif row_anchor == "below" then
-    row = screenpos.row + b
-    if row + height + b > vim.o.lines - 1 then row = math.max(b, screenpos.row - height - 1 - b) end
+    local anchor = eq_screen_row("end_row") or screenpos.row
+    row = anchor + b + gap
+    if row + height + b > vim.o.lines - 1 then row = math.max(b, screenpos.row - height - 1 - b - gap) end
   elseif row_anchor == "top" then
     local info = vim.fn.getwininfo(source_win)[1]
     row = info and (info.winrow - 1) or 0

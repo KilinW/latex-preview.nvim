@@ -47,6 +47,7 @@ local M = {}
 ---@field max_width integer? Maximum popup image width in terminal cells. Default: editor width minus padding.
 ---@field max_height integer? Maximum popup image height in terminal cells. Default: editor height minus padding.
 ---@field live_update_delay_ms integer Debounce delay for rerendering while typing.
+---@field gap integer Blank rows between the popup and the equation. Default: 0.
 ---@field position { row: "cursor"|"above"|"below"|"top"|"bottom", col: "cursor"|"left"|"right" }|"cursor"|"left"|"right" Popup anchor per axis; a bare string sets the column. Default: cursor on both.
 
 ---@class LatexPreview.HoverConfig
@@ -126,14 +127,18 @@ M.defaults = {
     live_update_delay_ms = 300,
     -- Where the popup sits. Each axis is independent:
     --   row = "cursor" (default, below the line unless it does not fit)
-    --       | "above" | "below"  -- track the cursor line, fixed side
+    --       | "above" | "below"  -- clear of the whole equation, fixed side
     --       | "top"   | "bottom" -- pin to the window edge
     --   col = "cursor" (default) | "left" | "right"
+    -- "above"/"below" anchor to the equation's first/last line rather than the
+    -- cursor line, so a multi-line display block is never partly covered.
     -- "left" aligns with the first text column, not the window edge, so the
     -- number/sign gutter stays visible. Pinning both axes also stops the
     -- popup from being suppressed while the completion menu is open.
     -- A bare string is accepted as shorthand for the column anchor.
     position = { row = "cursor", col = "cursor" },
+    -- Blank rows kept between the popup and the equation it describes.
+    gap = 0,
   },
 
   hover = {
