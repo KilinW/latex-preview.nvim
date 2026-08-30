@@ -229,6 +229,22 @@ local function place_under_cursor(win, source_win)
   local cursor = vim.api.nvim_win_get_cursor(source_win)
   local ok, screenpos = pcall(vim.fn.screenpos, source_win, cursor[1], cursor[2] + 1)
   if not ok or not screenpos or screenpos.row == 0 then return false end
+
+  -- screenpos() reports the screen grid; win.opts.row is the editor grid. They
+  -- coincide only when nothing is drawn above the editor area -- add a tabline
+  -- (showtabline=1 does that as soon as a second tab exists) and every
+  -- screenpos-derived row is one too low, which lands the popup's bottom
+  -- border on the line it was supposed to sit above. Measure the offset rather
+  -- than assume it.
+  local grid_offset = 0
+  do
+    local wp = vim.api.nvim_win_get_position(source_win)
+    local topline = vim.fn.line("w0", source_win)
+    local okt, sp0 = pcall(vim.fn.screenpos, source_win, topline, 1)
+    if okt and sp0 and sp0.row > 0 then
+      grid_offset = (sp0.row - 1) - wp[1]
+    end
+  end
   local height = tonumber(win.opts.height) or 1
   local width = tonumber(win.opts.width) or 1
   -- opts.height/width are the *content* size; Neovim draws the border outside
@@ -239,9 +255,11 @@ local function place_under_cursor(win, source_win)
   local b = (bok and bordered) and 1 or 0
   local max_row = math.max(0, vim.o.lines - height - 1 - b)
   local max_col = math.max(0, vim.o.columns - width - 1 - b)
-  local row = screenpos.row
+  -- from here on, work in the editor grid
+  local cur_row = screenpos.row - grid_offset
+  local row = cur_row
   if row + height > vim.o.lines - 1 then
-    row = math.max(0, screenpos.row - height - 1)
+    row = math.max(0, cur_row - height - 1)
   end
   local col = screenpos.col - 1
 
@@ -273,18 +291,18 @@ local function place_under_cursor(win, source_win)
     local lnum = eq and eq[edge]
     if not lnum then return nil end
     local okp, p = pcall(vim.fn.screenpos, source_win, lnum + 1, 1)
-    if okp and p and p.row > 0 then return p.row end
+    if okp and p and p.row > 0 then return p.row - grid_offset end
     return nil
   end
 
   if row_anchor == "above" then
-    local anchor = eq_screen_row("start_row") or screenpos.row
+    local anchor = eq_screen_row("start_row") or cur_row
     row = anchor - height - 1 - b - gap
-    if row < b then row = screenpos.row + b end -- no room above, fall back below
+    if row < b then row = cur_row + b end -- no room above, fall back below
   elseif row_anchor == "below" then
-    local anchor = eq_screen_row("end_row") or screenpos.row
+    local anchor = eq_screen_row("end_row") or cur_row
     row = anchor + b + gap
-    if row + height + b > vim.o.lines - 1 then row = math.max(b, screenpos.row - height - 1 - b - gap) end
+    if row + height + b > vim.o.lines - 1 then row = math.max(b, cur_row - height - 1 - b - gap) end
   elseif row_anchor == "top" then
     local info = vim.fn.getwininfo(source_win)[1]
     row = info and (info.winrow - 1) or 0
