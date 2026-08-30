@@ -225,10 +225,14 @@ local function place_under_cursor(win, source_win)
 
   -- popup.position pins the popup instead of letting it chase the cursor
   -- horizontally, which is distracting while typing a long equation.
-  -- "cursor" (default) keeps the original behaviour.
+  -- "cursor" (default) keeps the original behaviour. "left" aligns with the
+  -- first text column rather than the window edge, so it does not cover the
+  -- number/sign/fold gutter: wincol is the 1-based screen column of the
+  -- window, textoff the width of everything left of the text.
   local position = (config.options.popup or {}).position
   if position == "left" then
-    col = 0
+    local info = vim.fn.getwininfo(source_win)[1]
+    col = info and ((info.wincol - 1) + info.textoff) or 0
   elseif position == "right" then
     col = max_col
   end
@@ -547,6 +551,11 @@ local function show_image_file(buf, source_win, png_path, opts)
     max_width = max_width,
     max_height = max_height,
     on_update_pre = function(placement)
+      -- Snacks normally prefers ImageMagick's identify metadata, applying DPI
+      -- and terminal scale math. For generated equation PNGs we already control
+      -- the exact pixel size, so use the PNG header dimensions directly;
+      -- otherwise identical font-size renders can look different depending on
+      -- rasterizer DPI metadata.
       placement.img.info = nil
       if state and state.prev_img then
         -- Both placements live on the same buffer until now. Drop the previous
@@ -816,65 +825,15 @@ function M.open()
 
     -- If a hover for the same image is already showing, just refresh it.
     -- Otherwise close any previous and open a new one.
-    if current and current.img and current.img.img and current.img.img.src == png_path then
-      current.eq = live_eq
-      current.source_win = source_win
-      show_under_cursor(current.win, source_win)
-      pcall(function() current.img:update() end)
-      return
-    end
-    close_current()
-
-    -- Open a floating Snacks.win. We piggy-back on snacks's "snacks_image"
-    -- style so it shares config (border, winblend, padding) with snacks's
-    -- own image hover. The width/height fields are filled in via the
-    -- placement's on_update_pre callback once we know the rendered size.
-    local win = snacks.win(snacks.win.resolve(snacks.image.config.doc, "snacks_image", {
-      show = false,
-      enter = false,
-      relative = "editor",
-      row = 0,
-      col = 0,
-      wo = { winblend = snacks.image.terminal.env().placeholders and 0 or nil },
-    }))
-    win:open_buf()
-    map_close_keys(win, buf)
-
-    local updated = false
-    local popup = config.options.popup or {}
-    local max_width = popup.max_width or math.max(1, vim.o.columns - 4)
-    local max_height = popup.max_height or math.max(1, vim.o.lines - 4)
-    local placement_opts = snacks.config.merge({}, snacks.image.config.doc, {
-      inline = false,
-      max_width = max_width,
-      max_height = max_height,
-      on_update_pre = function(placement)
-        -- Snacks normally prefers ImageMagick's identify metadata, applying
-        -- DPI and terminal scale math. For generated equation PNGs we already
-        -- control the exact pixel size, so use the PNG header dimensions
-        -- directly; otherwise identical font-size renders can look different
-        -- depending on rasterizer DPI metadata.
-        placement.img.info = nil
-        if not updated then
-          local loc = placement:state().loc
-          win.opts.width = loc.width
-          win.opts.height = loc.height
-          updated = show_under_cursor(win, source_win)
-        end
-      end,
-    })
-
-    current = {
+    -- This used to be a verbatim copy of show_image_file(). Keeping two copies
+    -- meant the live-typing path here never picked up fixes made to the other
+    -- one, so it now delegates.
+    show_image_file(buf, source_win, png_path, {
       type = "equation",
-      win = win,
-      buf = buf,
-      source_win = source_win,
       eq = live_eq,
       render_id = render_id,
       signature = signature,
-      img = snacks.image.placement.new(win.buf, png_path, placement_opts),
-    }
-    register_autocmds(buf)
+    })
   end)
 
   return true
