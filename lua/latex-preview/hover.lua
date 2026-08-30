@@ -205,8 +205,24 @@ local function render_signature(preamble, eq, buf)
   }, "\n--latex-preview--\n")
 end
 
+---Normalise popup.position into { row = ..., col = ... }. A bare string is
+---taken as the column anchor, which is how the option was first introduced.
+---@return string, string
+local function position_anchors()
+  local p = (config.options.popup or {}).position
+  if type(p) == "string" then return "cursor", p end
+  p = p or {}
+  return p.row or "cursor", p.col or "cursor"
+end
+
 local function place_under_cursor(win, source_win)
-  if vim.fn.pumvisible() == 1 then return false end
+  local row_anchor, col_anchor = position_anchors()
+  local pinned = row_anchor ~= "cursor" and col_anchor ~= "cursor"
+  -- The completion menu and a cursor-following popup fight over the same
+  -- space, hence this bail. A pinned popup does not follow anything, so
+  -- there is nothing to avoid -- and skipping the update would also freeze
+  -- its size while the menu is open.
+  if not pinned and vim.fn.pumvisible() == 1 then return false end
   if not win then return false end
   source_win = source_win or (current and current.source_win) or vim.api.nvim_get_current_win()
   if not vim.api.nvim_win_is_valid(source_win) then return false end
@@ -223,18 +239,25 @@ local function place_under_cursor(win, source_win)
   end
   local col = screenpos.col - 1
 
-  -- popup.position pins the popup instead of letting it chase the cursor
-  -- horizontally, which is distracting while typing a long equation.
-  -- "cursor" (default) keeps the original behaviour. "left" aligns with the
-  -- first text column rather than the window edge, so it does not cover the
-  -- number/sign/fold gutter: wincol is the 1-based screen column of the
-  -- window, textoff the width of everything left of the text.
-  local position = (config.options.popup or {}).position
-  if position == "left" then
+  -- popup.position pins the popup instead of letting it chase the cursor,
+  -- which is distracting while typing and makes it collide with the
+  -- completion menu. "cursor" (default) keeps the original behaviour.
+  --
+  -- "left" aligns with the first text column rather than the window edge, so
+  -- it does not cover the number/sign/fold gutter: wincol is the 1-based
+  -- screen column of the window, textoff the width of everything left of it.
+  if col_anchor == "left" then
     local info = vim.fn.getwininfo(source_win)[1]
     col = info and ((info.wincol - 1) + info.textoff) or 0
-  elseif position == "right" then
+  elseif col_anchor == "right" then
     col = max_col
+  end
+
+  if row_anchor == "top" then
+    local info = vim.fn.getwininfo(source_win)[1]
+    row = info and (info.winrow - 1) or 0
+  elseif row_anchor == "bottom" then
+    row = max_row
   end
 
   win.opts.relative = "editor"
