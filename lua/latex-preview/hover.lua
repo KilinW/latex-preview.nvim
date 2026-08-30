@@ -550,6 +550,15 @@ local function show_image_file(buf, source_win, png_path, opts)
     inline = false,
     max_width = max_width,
     max_height = max_height,
+    -- Placement:state() otherwise derives its fit box from the windows already
+    -- displaying the image (image/placement.lua:472), which is this popup. Once
+    -- the window has a size, the image is fitted into it and reports that size
+    -- back, so it can never grow again. That was invisible while every render
+    -- built a fresh hidden window -- wins() was empty and the box defaulted to
+    -- the editor size -- but reusing the window closes the loop. Pin the box so
+    -- the reported size depends only on the image.
+    width = max_width,
+    height = max_height,
     on_update_pre = function(placement)
       -- Snacks normally prefers ImageMagick's identify metadata, applying DPI
       -- and terminal scale math. For generated equation PNGs we already control
