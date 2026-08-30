@@ -253,7 +253,16 @@ local function place_under_cursor(win, source_win)
     col = max_col
   end
 
-  if row_anchor == "top" then
+  -- "above"/"below" still track the cursor line, they just fix which side of
+  -- it the popup sits on instead of letting fit decide. "top"/"bottom" pin to
+  -- the window edge and ignore the cursor entirely.
+  if row_anchor == "above" then
+    row = screenpos.row - height - 1
+    if row < 0 then row = screenpos.row end -- no room above, fall back below
+  elseif row_anchor == "below" then
+    row = screenpos.row
+    if row + height > vim.o.lines - 1 then row = math.max(0, screenpos.row - height - 1) end
+  elseif row_anchor == "top" then
     local info = vim.fn.getwininfo(source_win)[1]
     row = info and (info.winrow - 1) or 0
   elseif row_anchor == "bottom" then

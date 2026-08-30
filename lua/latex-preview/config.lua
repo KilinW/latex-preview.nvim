@@ -47,7 +47,7 @@ local M = {}
 ---@field max_width integer? Maximum popup image width in terminal cells. Default: editor width minus padding.
 ---@field max_height integer? Maximum popup image height in terminal cells. Default: editor height minus padding.
 ---@field live_update_delay_ms integer Debounce delay for rerendering while typing.
----@field position { row: "cursor"|"top"|"bottom", col: "cursor"|"left"|"right" }|"cursor"|"left"|"right" Popup anchor per axis; a bare string sets the column. Default: cursor on both.
+---@field position { row: "cursor"|"above"|"below"|"top"|"bottom", col: "cursor"|"left"|"right" }|"cursor"|"left"|"right" Popup anchor per axis; a bare string sets the column. Default: cursor on both.
 
 ---@class LatexPreview.HoverConfig
 ---@field auto_open boolean? Override Snacks image.doc.float for auto hover.
@@ -125,7 +125,9 @@ M.defaults = {
     max_height = nil,
     live_update_delay_ms = 300,
     -- Where the popup sits. Each axis is independent:
-    --   row = "cursor" (default) | "top" | "bottom"
+    --   row = "cursor" (default, below the line unless it does not fit)
+    --       | "above" | "below"  -- track the cursor line, fixed side
+    --       | "top"   | "bottom" -- pin to the window edge
     --   col = "cursor" (default) | "left" | "right"
     -- "left" aligns with the first text column, not the window edge, so the
     -- number/sign gutter stays visible. Pinning both axes also stops the
