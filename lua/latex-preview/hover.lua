@@ -588,7 +588,23 @@ local function show_image_file(buf, source_win, png_path, opts)
     prev_img = old_img,
   }
   current = state
-  state.img = snacks.image.placement.new(win.buf, png_path, placement_opts)
+  -- Placement.new() calls Placement:progress() synchronously for non-inline
+  -- placements (image/placement.lua:102), which blanks the buffer and starts an
+  -- 80ms "<step> loading …" spinner on it. That buffer is the popup's, and the
+  -- previous image is still drawn there, so the spinner would wipe exactly the
+  -- content we are deliberately keeping until the swap. Suppress it for the
+  -- duration of the constructor; nothing runs in between, so the override
+  -- cannot leak to another placement.
+  local placement_mod = require("snacks.image.placement")
+  local progress = placement_mod.progress
+  placement_mod.progress = function() end
+  local ok, img = pcall(snacks.image.placement.new, win.buf, png_path, placement_opts)
+  placement_mod.progress = progress
+  if not ok then
+    close_current()
+    return false
+  end
+  state.img = img
   register_autocmds(buf)
   return true
 end
