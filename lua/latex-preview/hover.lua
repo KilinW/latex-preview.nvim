@@ -57,6 +57,7 @@ local function close_current()
   if not current then return end
   stop_refresh_timer()
   if current.img then pcall(function() current.img:close() end) end
+  if current.prev_img then pcall(function() current.prev_img:close() end) end
   for _, img in ipairs(current.imgs or {}) do
     pcall(function() img:close() end)
   end
@@ -220,9 +221,21 @@ local function place_under_cursor(win, source_win)
   if row + height > vim.o.lines - 1 then
     row = math.max(0, screenpos.row - height - 1)
   end
+  local col = screenpos.col - 1
+
+  -- popup.position pins the popup instead of letting it chase the cursor
+  -- horizontally, which is distracting while typing a long equation.
+  -- "cursor" (default) keeps the original behaviour.
+  local position = (config.options.popup or {}).position
+  if position == "left" then
+    col = 0
+  elseif position == "right" then
+    col = max_col
+  end
+
   win.opts.relative = "editor"
   win.opts.row = math.max(0, math.min(max_row, row))
-  win.opts.col = math.max(0, math.min(max_col, screenpos.col - 1))
+  win.opts.col = math.max(0, math.min(max_col, col))
   if win.win and vim.api.nvim_win_is_valid(win.win) then
     pcall(function() win:update() end)
   end
@@ -481,9 +494,36 @@ local function show_image_file(buf, source_win, png_path, opts)
     pcall(function() current.img:update() end)
     return true
   end
-  close_current()
 
-  local win = snacks.win(snacks.win.resolve(snacks.image.config.doc, "snacks_image", {
+  -- Editing an equation changes png_path, so the branch above misses and we
+  -- need a placement for the new image. Destroying the window to build a fresh
+  -- one makes the popup blink out and back on every keystroke, so keep the
+  -- window and swap only the placement: the new one is created hidden, and the
+  -- old one is closed from on_update_pre, which snacks calls once the image is
+  -- ready and immediately before it draws (image/placement.lua:517-529). The
+  -- exchange therefore lands inside a single redraw.
+  -- Reuse is deliberately not restricted to the same equation: moving between
+  -- equations should slide the popup rather than blink it, and current.eq is
+  -- refreshed below either way. It is restricted to the same source buffer,
+  -- because map_close_keys() is skipped on the reuse path and its mappings live
+  -- on that buffer.
+  local reuse = current
+      and current.buf == buf
+      and current.win
+      and current.win.win
+      and vim.api.nvim_win_is_valid(current.win.win)
+      and current.type == (opts.type or "image")
+      or nil
+  local win, old_img
+  if reuse then
+    win = current.win
+    old_img = current.img
+    stop_refresh_timer()
+  else
+    close_current()
+  end
+
+  win = win or snacks.win(snacks.win.resolve(snacks.image.config.doc, "snacks_image", {
     show = false,
     enter = false,
     relative = "editor",
@@ -491,19 +531,30 @@ local function show_image_file(buf, source_win, png_path, opts)
     col = 0,
     wo = { winblend = snacks.image.terminal.env().placeholders and 0 or nil },
   }))
-  win:open_buf()
-  map_close_keys(win, buf)
+  if not reuse then
+    win:open_buf()
+    map_close_keys(win, buf)
+  end
 
   local updated = false
   local popup = config.options.popup or {}
   local max_width = popup.max_width or math.max(1, vim.o.columns - 4)
   local max_height = popup.max_height or math.max(1, vim.o.lines - 4)
+  ---@type table
+  local state
   local placement_opts = snacks.config.merge({}, snacks.image.config.doc, {
     inline = false,
     max_width = max_width,
     max_height = max_height,
     on_update_pre = function(placement)
       placement.img.info = nil
+      if state and state.prev_img then
+        -- Both placements live on the same buffer until now. Drop the previous
+        -- one here, immediately before snacks draws the new one, so the window
+        -- never renders empty in between.
+        pcall(function() state.prev_img:close() end)
+        state.prev_img = nil
+      end
       if not updated then
         local loc = placement:state().loc
         win.opts.width = loc.width
@@ -513,7 +564,11 @@ local function show_image_file(buf, source_win, png_path, opts)
     end,
   })
 
-  current = {
+  -- prev_img is recorded before the placement exists, so that a render which
+  -- completes unusually fast cannot fire on_update_pre before we have stored
+  -- it. If the new placement never becomes ready, on_update_pre never runs and
+  -- close_current() reaps prev_img instead of orphaning it on the buffer.
+  state = {
     type = opts.type or "image",
     win = win,
     buf = buf,
@@ -521,8 +576,10 @@ local function show_image_file(buf, source_win, png_path, opts)
     eq = opts.eq,
     render_id = opts.render_id,
     signature = opts.signature,
-    img = snacks.image.placement.new(win.buf, png_path, placement_opts),
+    prev_img = old_img,
   }
+  current = state
+  state.img = snacks.image.placement.new(win.buf, png_path, placement_opts)
   register_autocmds(buf)
   return true
 end
