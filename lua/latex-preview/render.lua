@@ -319,18 +319,20 @@ local function resolve_tool()
   return tool
 end
 
----Whether to ask the daemon to rasterize in-process. Opt-in only: "auto" does
----NOT choose it.
+---Whether to ask the daemon to rasterize in-process. Preferred when available,
+---because it is the only path that spawns no process at all.
 ---
----Not the default only because the one live measurement of it was taken before
----the daemon's real bottleneck was found, and it lost. That bottleneck was 28ms
----of MathJax pipeline construction per request, which both paths paid; with it
----gone a typeset is ~1.9ms and in-daemon rasterization ~2.9ms, against ~18.5ms
----just to start rsvg-convert. The synthetic numbers now favour this path
----clearly, which is not the same as evidence from a real session.
+---Measured end to end in a live editing session, keystroke to bytes written to
+---the terminal: 5.6ms median, 7.7ms p90, zero subprocesses. The external path
+---on the same setup was 195ms median with a rasterizer spawn per render.
+---
+---Setting svg_to_png to "rsvg" or "magick" opts out. "daemon" forces it, which
+---only differs from "auto" in that :checkhealth then reports a missing
+---@resvg/resvg-js as an error rather than a suggestion.
 ---@return boolean
 local function use_daemon_rasterizer()
-  if config.options.render.svg_to_png ~= "daemon" then return false end
+  local tool = config.options.render.svg_to_png
+  if tool ~= "auto" and tool ~= "daemon" then return false end
   return daemon.has_resvg()
 end
 

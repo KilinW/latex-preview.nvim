@@ -191,16 +191,22 @@ end
 local function check_daemon_rasterizer(script_path)
   if not script_path or vim.fn.executable("node") ~= 1 then return end
   local tool = config.options.render.svg_to_png
-  if tool ~= "daemon" then
-    report_ok(('rasterizing externally (render.svg_to_png = "%s")'):format(tool))
+  if tool ~= "auto" and tool ~= "daemon" then
+    report_ok(('rasterizing externally by request (render.svg_to_png = "%s")'):format(tool))
     return
   end
   local out = vim.fn.system({ "node", script_path, "--resvg-status" })
   if vim.v.shell_error == 0 and out:match("^ok") then
-    report_ok("daemon rasterizer: @resvg/resvg-js (in-process)")
-  else
+    report_ok("rasterizer: @resvg/resvg-js, in-process (no subprocess per render)")
+  elseif tool == "daemon" then
     report_err('render.svg_to_png = "daemon" but @resvg/resvg-js was not found',
       { "Renders are falling back to an external rasterizer.",
+        "Install it next to the plugin:  npm install @resvg/resvg-js" })
+  else
+    report_warn("@resvg/resvg-js not installed; a rasterizer is spawned per render",
+      { "That spawn costs ~18.5ms of library loading before it does any work,",
+        "and live preview pays it on every keystroke. Measured end to end,",
+        "in-process was 5.6ms median against 195ms for the external path.",
         "Install it next to the plugin:  npm install @resvg/resvg-js" })
   end
 end

@@ -311,9 +311,9 @@ require("latex-preview").setup({
     display_math_style = "display", -- "display" for LaTeX display style, "text" for compact previews
     pad_to_cells = true,       -- prevent terminal-cell rounding from enlarging short equations
     density = 300,             -- DPI for SVG -> PNG
-    -- "auto"/"daemon" rasterize inside the MathJax daemon when
-    -- @resvg/resvg-js is installed, else fall back to an external tool.
-    -- "rsvg"/"magick" force the external tool and disable the in-process path.
+    -- "auto" rasterizes inside the MathJax daemon when @resvg/resvg-js is
+    -- installed (no subprocess at all), else falls back to an external tool.
+    -- "rsvg"/"magick" force the external tool.
     svg_to_png = "auto",       -- "auto", "daemon", "rsvg", or "magick"
   },
 

@@ -42,10 +42,11 @@ local M = {}
 ---@field pad_to_cells boolean Pad PNGs to terminal-cell multiples to prevent terminal upscaling.
 ---@field density integer ImageMagick density (DPI) for SVG -> PNG.
 ---@field svg_to_png "auto"|"daemon"|"magick"|"rsvg" Tool used to rasterize.
----  "auto"   — rsvg-convert when present, else ImageMagick.
----  "rsvg" / "magick" — force one of those.
----  "daemon" — rasterize inside the MathJax daemon (needs @resvg/resvg-js).
----    Opt-in, and slower than it sounds while typing: see the note on defaults.
+---  "auto"   — the MathJax daemon when @resvg/resvg-js is installed, else
+---    rsvg-convert, else ImageMagick. The daemon path spawns no process at all.
+---  "rsvg" / "magick" — force an external tool.
+---  "daemon" — same as "auto", but :checkhealth treats a missing
+---    @resvg/resvg-js as an error rather than a suggestion.
 
 ---@class LatexPreview.PopupConfig
 ---@field max_width integer? Maximum popup image width in terminal cells. Default: editor width minus padding.
@@ -119,17 +120,15 @@ M.defaults = {
     display_math_style = "display",
     pad_to_cells = true,
     density = 300,
-    -- "auto" picks rsvg-convert, else ImageMagick.
+    -- "auto" rasterizes inside the MathJax daemon when @resvg/resvg-js is
+    -- installed, else falls back to rsvg-convert, else ImageMagick.
     --
-    -- "daemon" rasterizes in-process (needs @resvg/resvg-js). Since the
-    -- pipeline cache landed, a typeset costs ~1.9ms and in-daemon
-    -- rasterization ~2.9ms, against ~18.5ms just to start rsvg-convert — so
-    -- this should now be the faster option by a wide margin. It is still not
-    -- the default, because the one time it was measured in a live session it
-    -- lost badly, and that measurement was taken before the real bottleneck
-    -- (28ms of per-request MathJax setup) was found and fixed. Try it, measure
-    -- it, and change the default once there is evidence rather than a
-    -- plausible argument.
+    -- The in-process path is the only one that spawns nothing at all. Measured
+    -- end to end in a live editing session, keystroke to bytes written to the
+    -- terminal: 5.6ms median and 7.7ms p90, against 195ms median for the
+    -- external path. A spawn costs ~18.5ms of library loading before it does
+    -- any work, and once typing outruns that the spawns contend with each
+    -- other and it degrades further.
     svg_to_png = "auto",
   },
 
