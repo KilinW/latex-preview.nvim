@@ -600,6 +600,11 @@ function M.render(req, cb)
   -- PNG isn't, the rasterizer crashed mid-step and we want to retry.
   if can_reuse and uv.fs_stat(png_path) then
     if use_reusable_temp then schedule_temp_cache_limit_check() end
+    -- This path returns without going through finish(), so it needs its own
+    -- sidecar write. Reusing a PNG is the common case while editing — the same
+    -- content recurs constantly — and snacks' cache is trimmed independently of
+    -- ours, so the metadata can be gone even though the image is still here.
+    pcall(write_snacks_info, png_path)
     return vim.schedule(function() cb(nil, png_path) end)
   end
 

@@ -64,6 +64,17 @@ do
   vim.fn.system({ magick, "-size", "37x21", "xc:red", png })
 end
 
+-- Stub the daemon before render.lua captures it, so the cache-path assertions
+-- below do not need a real MathJax install.
+local daemon_calls = 0
+package.loaded["latex-preview.daemon"] = {
+  has_resvg = function() return false end,
+  render = function(_, cb)
+    daemon_calls = daemon_calls + 1
+    vim.schedule(function() cb(nil, "<svg></svg>") end)
+  end,
+}
+
 local render = require("latex-preview.render")
 
 local function run_convert(label)
@@ -111,6 +122,65 @@ package.loaded["snacks"] = nil
 local ok = pcall(render._write_snacks_info, png)
 package.loaded["snacks"] = saved
 check(ok, "writing the sidecar is a no-op when snacks cannot be loaded")
+
+-- Reusing a cached PNG returns without going through finish(), so it needs its
+-- own sidecar write. This was missed the first time round: the sidecar landed
+-- for fresh renders only, and reuse is the common case while editing, so
+-- `magick` kept being spawned and the optimisation looked like it did nothing.
+do
+  -- A stand-in rasterizer that copies the fixture to wherever it is told to
+  -- write. The real one would be handed "<svg></svg>" by the daemon stub and
+  -- fail, and a fake emitting junk would not survive png_size().
+  local fake_bin = vim.fn.tempname()
+  vim.fn.mkdir(fake_bin, "p")
+  local fd = assert(io.open(fake_bin .. "/magick", "w"))
+  fd:write("#!/bin/sh\nout=\"\"\nfor arg do out=\"$arg\"; done\ncp '" .. png .. "' \"$out\"\n")
+  fd:close()
+  uv.fs_chmod(fake_bin .. "/magick", 493)
+  local saved_path = vim.env.PATH
+  vim.env.PATH = fake_bin .. ":" .. (saved_path or "")
+
+  local config = require("latex-preview.config")
+  config.setup({
+    cache = false,
+    render = { fg = "#000000", pad_to_cells = false, density = 300, svg_to_png = "magick" },
+    snacks = { max_cache_files = 0, max_cache_bytes = 0, cache_grace_ms = 0 },
+  })
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(buf)
+
+  local function render_once(eq)
+    local done, path = false, nil
+    render.render({ preamble = "", equation = eq, buf = buf, live = true, live_id = eq },
+      function(_, p) path = p; done = true end)
+    vim.wait(10000, function() return done end, 20)
+    return path
+  end
+
+  local function info_for(p)
+    local s, pg = conv.get_page(p)
+    s = conv.norm(s)
+    local b = vim.fn.fnamemodify(s, ":t:r"):gsub("[^%w%.]+", "-")
+    return cache .. "/" .. vim.fn.sha256(s .. pg):sub(1, 8) .. "-" .. b .. ".png.info"
+  end
+
+  local first = render_once("x + y")
+  check(first ~= nil and uv.fs_stat(info_for(first)) ~= nil,
+    "a fresh render writes the sidecar")
+
+  -- Delete only the sidecar. The PNG stays, so the next call is a cache hit and
+  -- must notice the metadata is gone: snacks trims its cache independently.
+  if first then os.remove(info_for(first)) end
+  local calls_before = daemon_calls
+  local second = render_once("x + y")
+  check(second == first and daemon_calls == calls_before,
+    "the second render really was a cache hit",
+    ("path %s, daemon calls %d -> %d"):format(tostring(second == first), calls_before, daemon_calls))
+  check(second ~= nil and uv.fs_stat(info_for(second)) ~= nil,
+    "a cache hit rewrites the sidecar when it has gone missing")
+
+  vim.env.PATH = saved_path
+end
 
 vim.fn.delete(png)
 print(failures == 0 and "\nall snacks sidecar cases passed" or ("\n" .. failures .. " failure(s)"))
