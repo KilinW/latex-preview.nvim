@@ -322,15 +322,12 @@ end
 ---Whether to ask the daemon to rasterize in-process. Opt-in only: "auto" does
 ---NOT choose it.
 ---
----In-process rasterization wins when requests arrive one at a time, but it
----serializes MathJax and rasterization onto the daemon's single thread. With
----an external rasterizer the two overlap across requests, because rsvg-convert
----runs in its own process while node typesets the next equation. Measured in a
----real editing session, moving the work inside the daemon took the round trip
----from 49.6ms median / 94.9ms p90 to 772.5ms / 3896ms, with outstanding
----requests peaking at 34 instead of 3. Fast typing without request
----cancellation turns the extra per-request cost into a queue, and the queue
----dominates everything else.
+---Not the default only because the one live measurement of it was taken before
+---the daemon's real bottleneck was found, and it lost. That bottleneck was 28ms
+---of MathJax pipeline construction per request, which both paths paid; with it
+---gone a typeset is ~1.9ms and in-daemon rasterization ~2.9ms, against ~18.5ms
+---just to start rsvg-convert. The synthetic numbers now favour this path
+---clearly, which is not the same as evidence from a real session.
 ---@return boolean
 local function use_daemon_rasterizer()
   if config.options.render.svg_to_png ~= "daemon" then return false end

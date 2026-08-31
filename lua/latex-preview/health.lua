@@ -197,11 +197,7 @@ local function check_daemon_rasterizer(script_path)
   end
   local out = vim.fn.system({ "node", script_path, "--resvg-status" })
   if vim.v.shell_error == 0 and out:match("^ok") then
-    report_warn("daemon rasterizer: @resvg/resvg-js (in-process)",
-      { "This serializes MathJax and rasterization on one thread. It is faster",
-        "for one-off renders and much slower while typing, because superseded",
-        'requests are not cancelled. Set render.svg_to_png = "auto" unless you',
-        "have measured that it helps your workload." })
+    report_ok("daemon rasterizer: @resvg/resvg-js (in-process)")
   else
     report_err('render.svg_to_png = "daemon" but @resvg/resvg-js was not found',
       { "Renders are falling back to an external rasterizer.",

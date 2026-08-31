@@ -121,15 +121,15 @@ M.defaults = {
     density = 300,
     -- "auto" picks rsvg-convert, else ImageMagick.
     --
-    -- "daemon" rasterizes in-process (needs @resvg/resvg-js), which removes
-    -- rsvg-convert's ~18.5ms of library loading per render. That is a real win
-    -- for one-off renders, but it is NOT the default, because it also puts
-    -- MathJax and rasterization on the same single thread. An external
-    -- rasterizer overlaps with the next typeset; an in-process one does not.
-    -- Measured while typing, "daemon" took the round trip from 49.6ms median
-    -- to 772.5ms, with the request backlog peaking at 34 instead of 3. Until
-    -- superseded requests can be cancelled, the queue costs far more than the
-    -- spawn ever did.
+    -- "daemon" rasterizes in-process (needs @resvg/resvg-js). Since the
+    -- pipeline cache landed, a typeset costs ~1.9ms and in-daemon
+    -- rasterization ~2.9ms, against ~18.5ms just to start rsvg-convert — so
+    -- this should now be the faster option by a wide margin. It is still not
+    -- the default, because the one time it was measured in a live session it
+    -- lost badly, and that measurement was taken before the real bottleneck
+    -- (28ms of per-request MathJax setup) was found and fixed. Try it, measure
+    -- it, and change the default once there is evidence rather than a
+    -- plausible argument.
     svg_to_png = "auto",
   },
 

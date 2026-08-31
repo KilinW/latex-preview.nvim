@@ -406,13 +406,37 @@ function normalizeEquation(equation, display, displayMathStyle) {
 }
 
 // ---------------------------------------------------------------------------
-// Render one equation. Fresh adaptor per call, so a \newcommand the user
-// edits in their buffer correctly invalidates without daemon restart.
+// Render one equation.
+//
+// Constructing the MathJax pipeline (adaptor + TeX + SVG + document) costs
+// ~28ms, against ~1.8ms to actually typeset an equation — measured with the
+// phase timings below. Doing it per request made the daemon 15x slower than it
+// needed to be for the common case, which is the same buffer being re-rendered
+// on every keystroke.
+//
+// The pipeline is therefore cached, keyed by the preamble. That is the right
+// invalidation granularity: the preamble is the only per-request input that
+// mutates the pipeline, because converting it registers the buffer's macros
+// into the TeX jax. Editing a \newcommand still takes effect immediately, it
+// just builds a new pipeline instead of reusing one.
 // ---------------------------------------------------------------------------
-async function renderOne({ preamble, equation, display, color, font_size, display_math_style, ex }) {
-  if (!MJ) throw new Error("mathjax not booted");
-  const { mathjax, TeX, SVG, liteAdaptor, packages } = MJ;
 
+// Phase timings from the most recent renderOne, in ms. Returned to the caller
+// only when a request sets "debug": true, so profiling a live session does not
+// need a patched daemon.
+export const PHASES = { setup: 0, preamble: 0, equation: 0, serialize: 0 };
+
+const PIPELINES = new Map(); // preamble -> { html, uses }
+
+// Bound both how many buffers' pipelines are held and how long any one is
+// reused. MathJax documents accumulate their converted math items, so a
+// pipeline reused forever is a slow leak; rebuilding costs 28ms once per
+// MAX_USES renders, which is noise spread across that many keystrokes.
+const MAX_PIPELINES = 8;
+const MAX_USES = 500;
+
+async function buildPipeline(preamble, opts) {
+  const { mathjax, TeX, SVG, liteAdaptor, packages } = MJ;
   const adaptor = liteAdaptor();
   const tex = new TeX({
     packages,
@@ -424,20 +448,21 @@ async function renderOne({ preamble, equation, display, color, font_size, displa
     formatError: (jax, err) => { throw err; },
   });
   const svg = new SVG({
-    fontCache: "local",
+    // "none" rather than "local": with a cached document, "local" would let
+    // the second render assume glyph <defs> emitted by the first are still
+    // present in its output and omit them, producing an SVG whose <use>
+    // references dangle. Inlining the paths keeps every render self-contained,
+    // which is required anyway since each one is rasterized on its own.
+    fontCache: "none",
     linebreaks: { inline: false },
   });
   const html = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-  const em = Number(font_size) > 0 ? Number(font_size) : 11;
-  const opts = { display: false, em, ex: ex || em / 2, containerWidth: 1280 };
-
-  // Pass 1: register macros from the preamble. MathJax's `html.convert`
-  // takes raw math content (no \(...\) or \[...\] delimiters) and
-  // processes it in math mode; the `newcommand` package handles bare
-  // \newcommand / \def / \let / \DeclareMathOperator definitions in math
-  // mode with no wrapping needed. We pass everything as one string first
-  // (one MathJax invocation = ~3ms), then on error fall back to per-line
+  // Register macros from the preamble. MathJax's `html.convert` takes raw math
+  // content (no \(...\) or \[...\] delimiters) and processes it in math mode;
+  // the `newcommand` package handles bare \newcommand / \def / \let /
+  // \DeclareMathOperator definitions in math mode with no wrapping needed. We
+  // pass everything as one string first, then on error fall back to per-line
   // parsing so a single bad line doesn't lose all the good ones.
   if (preamble && preamble.trim()) {
     try {
@@ -448,13 +473,63 @@ async function renderOne({ preamble, equation, display, color, font_size, displa
       }
     }
   }
+  return { html, adaptor, uses: 0 };
+}
 
-  // Pass 2: render the equation. The caller passes math content WITHOUT
-  // delimiters (the plugin strips them upstream), and `display` says whether
-  // to render inline or display style. Errors here are caller-visible —
-  // the plugin surfaces ok=false as a notification; no automatic fallback.
+// An equation that defines macros would mutate the pipeline it renders on, and
+// those definitions would then be visible to later equations sharing the same
+// preamble — state the old build-per-request code could not carry. Such a
+// request gets a throwaway pipeline instead, so it still sees its own
+// definitions and nothing else does.
+const DEFINES_MACROS =
+  /\\(?:re|provide)?newcommand\b|\\(?:g|x|e)?def\b|\\let\b|\\DeclareMathOperator\b|\\newenvironment\b/;
+
+async function getPipeline(preamble, opts, equation) {
+  if (equation && DEFINES_MACROS.test(equation)) {
+    return { entry: await buildPipeline(preamble, opts), fresh: true };
+  }
+  const key = preamble || "";
+  const hit = PIPELINES.get(key);
+  if (hit && hit.uses < MAX_USES) {
+    hit.uses++;
+    // Refresh LRU position.
+    PIPELINES.delete(key);
+    PIPELINES.set(key, hit);
+    return { entry: hit, fresh: false };
+  }
+  const entry = await buildPipeline(preamble, opts);
+  entry.uses = 1;
+  PIPELINES.delete(key);
+  PIPELINES.set(key, entry);
+  while (PIPELINES.size > MAX_PIPELINES) {
+    PIPELINES.delete(PIPELINES.keys().next().value);
+  }
+  return { entry, fresh: true };
+}
+
+async function renderOne({ preamble, equation, display, color, font_size, display_math_style, ex }) {
+  if (!MJ) throw new Error("mathjax not booted");
+  const mark = () => Number(process.hrtime.bigint()) / 1e6;
+  let t = mark();
+
+  const em = Number(font_size) > 0 ? Number(font_size) : 11;
+  const opts = { display: false, em, ex: ex || em / 2, containerWidth: 1280 };
+
+  const { entry, fresh } = await getPipeline(preamble, opts, equation);
+  const { html, adaptor } = entry;
+  // Building the pipeline includes the preamble pass, so on a miss the two are
+  // reported together under `setup` and `preamble` reads 0.
+  PHASES.setup = fresh ? mark() - t : 0;
+  PHASES.preamble = 0;
+  t = mark();
+
+  // Render the equation. The caller passes math content WITHOUT delimiters
+  // (the plugin strips them upstream), and `display` says whether to render
+  // inline or display style. Errors here are caller-visible — the plugin
+  // surfaces ok=false as a notification; no automatic fallback.
   const math = normalizeEquation(equation, !!display, display_math_style);
   const out = await html.convertPromise(math, { ...opts, display: !!display });
+  PHASES.equation = mark() - t; t = mark();
   // Use MathJax's XML serializer when available: MathJax 4 stamps every node
   // with a `data-latex` attribute holding its raw TeX, so `a < b` yields
   // data-latex="<". The HTML serializer (innerHTML) leaves </>/& unescaped in
@@ -484,6 +559,7 @@ async function renderOne({ preamble, equation, display, color, font_size, displa
   if (!svgStr.startsWith("<?xml")) {
     svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + svgStr;
   }
+  PHASES.serialize = mark() - t;
   return svgStr;
 }
 
@@ -515,6 +591,7 @@ async function runDaemon() {
       const t0 = process.hrtime.bigint();
       const svg = await renderOne(req);
       const t1 = process.hrtime.bigint();
+      const phases = req.debug ? { phases: { ...PHASES } } : null;
       if (req.png && req.png.path && RESVG) {
         // Write the PNG here rather than shipping it back over the pipe: the
         // plugin hands snacks a file path anyway, and this keeps the response
@@ -536,11 +613,13 @@ async function runDaemon() {
           ms_typeset: Number(t1 - t0) / 1e6,
           ms_raster: Number(t2 - t1) / 1e6,
           ms_write: Number(t3 - t2) / 1e6,
+          ...phases,
         }) + "\n");
       } else {
         stdout.write(JSON.stringify({
           id: req.id, ok: true, svg,
           ms_typeset: Number(t1 - t0) / 1e6,
+          ...phases,
         }) + "\n");
       }
     } catch (e) {
