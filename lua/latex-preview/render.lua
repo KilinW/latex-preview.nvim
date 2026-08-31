@@ -502,11 +502,18 @@ local function page_for(svg, density)
   local page_w = math.max(1, math.ceil(out_w / cw) * cw)
   local page_h = math.max(1, math.ceil(out_h / ch) * ch)
   if page_w == out_w and page_h == out_h then return nil end
-  -- floor division matches ImageMagick's `-gravity center -extent`.
+  -- Left-aligned, vertically centred: the horizontal padding all goes on the
+  -- right. Centring horizontally made the left margin oscillate while typing —
+  -- as the equation grows, (page_w - out_w) shrinks until it crosses a cell
+  -- boundary, page_w jumps by one cell, and the margin snaps back to half a
+  -- cell. Since the popup is sized from the image there is nothing to centre
+  -- against, so the wobble bought nothing. Vertical stays centred: the height
+  -- only changes when the equation gains a fraction or a large operator, and
+  -- sitting centred in the row is what you want when it does.
   return {
     width = page_w,
     height = page_h,
-    left = math.floor((page_w - out_w) / 2),
+    left = 0,
     top = math.floor((page_h - out_h) / 2),
   }
 end
@@ -543,7 +550,9 @@ local function pad_to_cells(png_path, cb)
   spawn(bin, {
     png_path,
     "-background", "none",
-    "-gravity", "center",
+    -- "west" = flush left, vertically centred. Must match page_for()'s
+    -- left=0 / top=centred, or the two rasterizer paths drift apart.
+    "-gravity", "west",
     "-extent", ("%dx%d"):format(target_width, target_height),
     tmp,
   }, function(err)

@@ -326,9 +326,11 @@ function rasterize(svgStr, { density, cellWidth, cellHeight }) {
     const chh = Number(cellHeight) > 0 ? Number(cellHeight) : 0;
     const pageW = cw ? Math.max(1, Math.ceil(outW / cw) * cw) : outW;
     const pageH = chh ? Math.max(1, Math.ceil(outH / chh) * chh) : outH;
-    // Floor division matches ImageMagick's `-gravity center -extent`, which is
-    // what the original two-pass path produced.
-    const left = Math.floor((pageW - outW) / 2);
+    // Left-aligned, vertically centred, matching page_for() in render.lua and
+    // `-gravity west` in the ImageMagick fallback. Centring horizontally made
+    // the left margin oscillate by up to half a cell as the equation grew past
+    // each cell boundary while typing.
+    const left = 0;
     const top = Math.floor((pageH - outH) / 2);
     // An <?xml?> prolog is only legal at the very start of a document.
     const inner = svgStr.replace(/^<\?xml[^>]*\?>\s*/, "");
