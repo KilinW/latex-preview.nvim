@@ -3,7 +3,12 @@
 -- Render an equation to a PNG file on disk. Pipeline:
 --   (preamble, equation, display, color) hashed → reusable PNG hit?
 --     yes → return existing PNG path
---     no  → daemon.render → SVG → magick/rsvg-convert → PNG → cache/temp
+--     no, daemon has resvg → daemon.render → PNG → cache/temp
+--     no, otherwise        → daemon.render → SVG → magick/rsvg-convert → PNG
+--
+-- The first path keeps everything in one process: no intermediate SVG file
+-- and no rasterizer spawn, which is most of the per-keystroke cost during
+-- live preview. The second is the fallback when @resvg/resvg-js is missing.
 --
 -- The cache key is a content hash of all inputs that affect the output.
 -- That means editing a \newcommand in your buffer correctly invalidates,
@@ -529,6 +534,26 @@ function M.render(req, cb)
   end
 
   local fg_hex = config.get_fg():gsub("^#", "")
+  local density = effective_density(req)
+
+  -- Prefer rasterizing inside the daemon. rsvg-convert spends ~18.5ms loading
+  -- librsvg/cairo/pango/fontconfig against ~0.8ms of actual rasterization, and
+  -- that startup is paid on every keystroke during live preview. Going through
+  -- the daemon also removes the intermediate SVG file and one process spawn.
+  -- Only available once the daemon is up, so the first render of a session
+  -- still takes the path below.
+  local png_req = nil
+  if daemon.has_resvg() then
+    png_req = { path = png_path, density = density }
+    if should_pad_to_cells(req) then
+      local cw, ch = cell_size()
+      if cw and ch then
+        png_req.cell_width = cw
+        png_req.cell_height = ch
+      end
+    end
+  end
+
   daemon.render({
     preamble = req.preamble or "",
     equation = req.equation,
@@ -536,8 +561,11 @@ function M.render(req, cb)
     color = fg_hex,
     font_size = effective_font_size(req),
     display_math_style = config.options.render.display_math_style,
-  }, function(err, svg)
+    png = png_req,
+  }, function(err, svg, daemon_png)
     if err then cleanup_temps(); return finish(err, nil) end
+    -- The daemon rasterized and applied the cell padding in the same pass.
+    if daemon_png then return finish(nil, daemon_png) end
     if not svg then cleanup_temps(); return finish("daemon returned no svg", nil) end
     -- Write SVG.
     local fd = io.open(svg_path, "w")
@@ -550,7 +578,6 @@ function M.render(req, cb)
     -- two-step path. Anything that stops us computing the page up front --
     -- the magick backend, an unparseable SVG, or snacks not reporting a cell
     -- size -- falls back to the original post-hoc pad.
-    local density = effective_density(req)
     local page = should_pad_to_cells(req) and resolve_tool() == "rsvg"
       and page_for(svg, density)
       or nil

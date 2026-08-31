@@ -33,10 +33,11 @@ local config = require("latex-preview.config")
 ---@field stdout? uv.uv_pipe_t
 ---@field stderr? uv.uv_pipe_t
 ---@field ready boolean
+---@field resvg boolean Daemon resolved @resvg/resvg-js and can return PNGs itself.
 ---@field starting boolean
 ---@field next_id integer
----@field pending table<integer, fun(err: string?, svg: string?)>
----@field queue { req: table, cb: fun(err: string?, svg: string?) }[]
+---@field pending table<integer, fun(err: string?, svg: string?, png: string?)>
+---@field queue { req: table, cb: fun(err: string?, svg: string?, png: string?) }[]
 ---@field stdout_buf string
 ---@field stderr_buf string
 ---@field restart_count integer
@@ -45,6 +46,7 @@ local state = {
   handle = nil,
   stdin = nil, stdout = nil, stderr = nil,
   ready = false,
+  resvg = false,
   starting = false,
   next_id = 0,
   pending = {},
@@ -113,6 +115,7 @@ local function on_line(line)
   end
   if msg.ready then
     state.ready = true
+    state.resvg = msg.resvg == true
     state.starting = false
     state.restart_count = 0
     -- Flush queued requests.
@@ -126,8 +129,8 @@ local function on_line(line)
   local cb = state.pending[msg.id]
   if not cb then return end -- stale (post-restart)
   state.pending[msg.id] = nil
-  if msg.ok then pcall(cb, nil, msg.svg)
-  else pcall(cb, msg.err or "mathjax error", nil) end
+  if msg.ok then pcall(cb, nil, msg.svg, msg.png)
+  else pcall(cb, msg.err or "mathjax error", nil, nil) end
 end
 
 local function on_stdout_chunk(data)
@@ -245,9 +248,12 @@ end
 
 -- Public API ----------------------------------------------------------------
 
----Render an equation via the daemon. Async; cb(err, svg) on the main loop.
----@param req { preamble: string, equation: string, display: boolean, color: string }
----@param cb fun(err: string?, svg: string?)
+---Render an equation via the daemon. Async; cb(err, svg, png) on the main
+---loop. When `req.png` is set and the daemon has a rasterizer, it writes the
+---PNG itself and `png` is its path — `svg` is then nil, because nothing
+---downstream needs it. Otherwise `svg` is the markup and `png` is nil.
+---@param req { preamble: string, equation: string, display: boolean, color: string, png: { path: string, density: integer, cell_width: integer?, cell_height: integer? }? }
+---@param cb fun(err: string?, svg: string?, png: string?)
 function M.render(req, cb)
   if not state.handle then
     if not spawn() then
@@ -270,6 +276,7 @@ function M.render(req, cb)
     color = req.color or "000000",
     font_size = req.font_size or 11,
     display_math_style = req.display_math_style or "display",
+    png = req.png, -- nil is omitted by the encoder; the daemon then sends SVG
   }) .. "\n"
   state.stdin:write(payload, function(err)
     if err then
@@ -298,6 +305,13 @@ end
 
 function M.is_ready()
   return state.handle ~= nil and state.ready
+end
+
+---True when the daemon can rasterize in-process, so callers can skip writing
+---an intermediate SVG and spawning rsvg-convert. False until the daemon is
+---ready, which is correct: the first render then takes the fallback path.
+function M.has_resvg()
+  return M.is_ready() and state.resvg
 end
 
 function M._state()

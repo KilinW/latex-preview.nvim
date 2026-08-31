@@ -76,7 +76,11 @@ local function assert_grouped_pairs(dir)
     stems[stem][ext] = true
   end
   for stem, exts in pairs(stems) do
-    assert_true(exts.svg and exts.png, "temp cache kept a partial render group for " .. stem)
+    -- The PNG is the deliverable and must always survive trimming with its
+    -- group. The SVG is optional: when the daemon rasterizes in-process there
+    -- is no intermediate SVG to begin with. What must not happen is an SVG
+    -- left behind without its PNG.
+    assert_true(exts.png, "temp cache kept a render group without its png: " .. stem)
   end
 end
 
@@ -163,10 +167,24 @@ vim.env.PATH = fake_bin .. ":" .. (vim.env.PATH or "")
 package.path = "./lua/?.lua;./lua/?/init.lua;" .. package.path
 
 local daemon_calls = 0
+-- These cases cover the fallback pipeline (daemon returns SVG, an external
+-- rasterizer turns it into a PNG), so the stub reports no in-process
+-- rasterizer. The daemon-rasterizes branch is asserted separately at the end.
+local daemon_has_resvg = false
+local daemon_png_requests = {}
 package.loaded["latex-preview.daemon"] = {
-  render = function(_, cb)
+  has_resvg = function() return daemon_has_resvg end,
+  render = function(req, cb)
     daemon_calls = daemon_calls + 1
     vim.defer_fn(function()
+      if req.png then
+        -- Stand in for resvg: write the file the daemon would have written
+        -- and answer with its path instead of markup.
+        daemon_png_requests[#daemon_png_requests + 1] = req.png
+        local fd = io.open(req.png.path, "wb")
+        if fd then fd:write("fake png"); fd:close() end
+        return cb(nil, nil, req.png.path)
+      end
       cb(nil, "<svg></svg>")
     end, 10)
   end,
@@ -284,6 +302,26 @@ end, 10), "temp cache did not trim .info with its render group")
 assert_true(count_render_groups(temp_dir) <= 1, "temp cache kept more than one render group")
 assert_grouped_pairs(temp_dir)
 assert_info_maps_to_image(temp_dir)
+
+-- When the daemon can rasterize in-process, render.lua must hand it the target
+-- path and use what it writes: no intermediate SVG, no external rasterizer.
+-- The fake `magick` above writes the 3 bytes "png", and the daemon stub writes
+-- "fake png", so the file's contents say which path actually ran.
+daemon_has_resvg = true
+daemon_calls = 0
+local resvg_path = render_once("in daemon rasterizer")
+assert_eq(1, daemon_calls, "daemon-rasterized render should still call the daemon once")
+assert_eq(1, #daemon_png_requests, "render.lua should pass a png request when the daemon can rasterize")
+assert_eq(resvg_path, daemon_png_requests[1].path,
+  "the returned png should be the path render.lua asked the daemon to write")
+assert_eq(300, daemon_png_requests[1].density, "the png request should carry the effective density")
+local resvg_fd = assert(io.open(resvg_path, "rb"))
+local resvg_body = resvg_fd:read("*a")
+resvg_fd:close()
+assert_eq("fake png", resvg_body, "the daemon's png should be used verbatim, not re-rasterized")
+assert_true(not uv.fs_stat((resvg_path:gsub("%.png$", ".svg"))),
+  "the daemon-rasterized path should not write an intermediate svg")
+daemon_has_resvg = false
 
 local snacks_cache = root .. "/snacks-cache"
 vim.fn.mkdir(snacks_cache, "p")

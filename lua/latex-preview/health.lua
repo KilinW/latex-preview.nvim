@@ -184,6 +184,23 @@ local function check_rasterizer()
   end
 end
 
+-- The daemon can rasterize in-process via @resvg/resvg-js. When it can, no
+-- rsvg-convert is spawned per render and no intermediate SVG is written. The
+-- script owns the resolution logic (see --resvg-status) so this does not
+-- duplicate the candidate path list in Lua.
+local function check_daemon_rasterizer(script_path)
+  if not script_path or vim.fn.executable("node") ~= 1 then return end
+  local out = vim.fn.system({ "node", script_path, "--resvg-status" })
+  if vim.v.shell_error == 0 and out:match("^ok") then
+    report_ok("daemon rasterizer: @resvg/resvg-js (in-process)")
+  else
+    report_warn("@resvg/resvg-js not found; rsvg-convert is spawned once per render",
+      { "That spawn costs roughly 18ms of library loading against ~1ms of actual",
+        "rasterization, and live preview pays it on every keystroke.",
+        "Install it next to the plugin:  npm install @resvg/resvg-js" })
+  end
+end
+
 local function check_treesitter()
   local ok_, parsers = pcall(require, "nvim-treesitter.parsers")
   if not ok_ then
@@ -214,6 +231,7 @@ function M.check()
   check_daemon_script(script_path)
 
   vim.health.start("latex-preview: rendering")
+  check_daemon_rasterizer(script_path)
   check_rasterizer()
 
   vim.health.start("latex-preview: optional")

@@ -1,0 +1,8 @@
+{
+  "name": "latex-preview.nvim",
+  "private": true,
+  "description": "Optional Node dependencies for latex-preview.nvim's MathJax daemon. @mathjax/src is resolved from a global install by default; installing @resvg/resvg-js here lets the daemon rasterize in-process instead of spawning rsvg-convert on every render.",
+  "optionalDependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}

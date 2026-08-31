@@ -15,6 +15,20 @@
 //   response:  {"id": <echoed>, "ok": true,  "svg": "<svg>...</svg>"}
 //          or  {"id": <echoed>, "ok": false, "err": "..."}
 //
+// A request may also ask the daemon to rasterize, skipping the spawn of an
+// external rsvg-convert per render:
+//
+//   request:   {..., "png": {"path": "/tmp/x.png", "density": 300,
+//                            "cell_width": 10, "cell_height": 21}}
+//   response:  {"id": <echoed>, "ok": true, "png": "/tmp/x.png",
+//               "width": 170, "height": 84}
+//
+// This needs @resvg/resvg-js. The ready line advertises whether it resolved
+// ({"ready": true, "resvg": true}) so the plugin knows whether to ask.
+// rsvg-convert startup costs ~18.5ms per render against ~0.8ms of actual
+// rasterization; in-process resvg removes that overhead and the intermediate
+// SVG file with it.
+//
 // Errors during preamble parsing are swallowed line-by-line (Overleaf
 // pattern) so that \RequirePackage / \DeclareOption / \makeatletter inside
 // a .sty file don't kill the render. Errors on the actual equation
@@ -24,6 +38,7 @@
 //   mathjax-daemon.mjs --in FILE --out FILE.svg [--display] [--color HEX]
 //
 // Requires:  npm i -g @mathjax/src@4   (or local install — auto-detected)
+// Optional:  npm i @resvg/resvg-js     (in the plugin dir; enables "png")
 //
 
 import { argv, exit, stderr, stdin, stdout } from "node:process";
@@ -42,6 +57,7 @@ function parseArgs(a) {
     else if (k === "--ex") o.ex = parseFloat(a[++i]);
     else if (k === "--daemon") o.daemon = true;
     else if (k === "--list-paths") o.listPaths = true;
+    else if (k === "--resvg-status") o.resvgStatus = true;
   }
   return o;
 }
@@ -242,6 +258,95 @@ async function bootMathJax() {
 
 let MJ = null; // populated by bootMathJax()
 
+// ---------------------------------------------------------------------------
+// Rasterizer bootstrap. Optional: when @resvg/resvg-js is missing the daemon
+// still answers with SVG and the plugin falls back to spawning rsvg-convert.
+// ---------------------------------------------------------------------------
+let RESVG = null; // the Resvg class, or null when unavailable
+
+async function bootResvg() {
+  // A bare specifier resolves for a local install, because Node walks up from
+  // this file to <plugin>/node_modules. A global install is not on that path,
+  // so fall back to the same explicit locations we check for MathJax.
+  try {
+    return (await import("@resvg/resvg-js")).Resvg;
+  } catch (_) {
+    // fall through to the explicit paths
+  }
+  const path = await import("node:path");
+  const fsSync = await import("node:fs");
+  const { pathToFileURL } = await import("node:url");
+  const { fileURLToPath } = await import("node:url");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+
+  const candidates = [
+    process.env.LATEX_PREVIEW_RESVG_PATH,
+    path.join(here, "node_modules", "@resvg", "resvg-js"),
+    path.join(here, "..", "node_modules", "@resvg", "resvg-js"),
+    path.join(process.cwd(), "node_modules", "@resvg", "resvg-js"),
+    "/usr/lib/node_modules/@resvg/resvg-js",
+    "/usr/local/lib/node_modules/@resvg/resvg-js",
+    "/opt/homebrew/lib/node_modules/@resvg/resvg-js",
+    "/opt/local/lib/node_modules/@resvg/resvg-js",
+    path.join(process.env.HOME || "", ".npm-global/lib/node_modules/@resvg/resvg-js"),
+    path.join(process.env.HOME || "",
+      ".nvm/versions/node/" + process.version + "/lib/node_modules/@resvg/resvg-js"),
+  ];
+  for (const c of candidates) {
+    if (!c || !fsSync.existsSync(path.join(c, "package.json"))) continue;
+    try {
+      const mod = await import(pathToFileURL(path.join(c, "index.js")).href);
+      if (mod && mod.Resvg) return mod.Resvg;
+    } catch (_) {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+
+/// Rasterize a MathJax SVG, padding the output up to whole terminal cells.
+///
+/// The padding is expressed as an outer SVG rather than applied to the bitmap
+/// afterwards, so it costs nothing: one render produces the final image. The
+/// geometry deliberately mirrors what render.lua asked rsvg-convert for via
+/// --page-width/--page-height/--left/--top, and was verified to produce
+/// byte-identical dimensions and a visually identical result.
+function rasterize(svgStr, { density, cellWidth, cellHeight }) {
+  const zoom = (Number(density) > 0 ? Number(density) : 96) / 96;
+  const m = svgStr.match(/width="([\d.]+)px"\s+height="([\d.]+)px"/);
+
+  let source = svgStr;
+  let fitTo = { mode: "zoom", value: zoom };
+  if (m) {
+    // rsvg-convert's output is exactly ceil(intrinsic * zoom); match it so the
+    // two backends stay interchangeable.
+    const outW = Math.max(1, Math.ceil(Number(m[1]) * zoom));
+    const outH = Math.max(1, Math.ceil(Number(m[2]) * zoom));
+    const cw = Number(cellWidth) > 0 ? Number(cellWidth) : 0;
+    const chh = Number(cellHeight) > 0 ? Number(cellHeight) : 0;
+    const pageW = cw ? Math.max(1, Math.ceil(outW / cw) * cw) : outW;
+    const pageH = chh ? Math.max(1, Math.ceil(outH / chh) * chh) : outH;
+    // Floor division matches ImageMagick's `-gravity center -extent`, which is
+    // what the original two-pass path produced.
+    const left = Math.floor((pageW - outW) / 2);
+    const top = Math.floor((pageH - outH) / 2);
+    // An <?xml?> prolog is only legal at the very start of a document.
+    const inner = svgStr.replace(/^<\?xml[^>]*\?>\s*/, "");
+    source =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}" height="${pageH}" ` +
+      `viewBox="0 0 ${pageW} ${pageH}">` +
+      `<g transform="translate(${left},${top}) scale(${zoom})">${inner}</g></svg>`;
+    fitTo = { mode: "original" };
+  }
+
+  // loadSystemFonts defaults to true and makes every instance scan the system
+  // font database — seconds per render on macOS. MathJax's SVG output is pure
+  // <path> data with no <text>, so there is no font to look up.
+  const r = new RESVG(source, { fitTo, font: { loadSystemFonts: false } });
+  const img = r.render();
+  return { png: img.asPng(), width: img.width, height: img.height };
+}
+
 function splitPreambleBlocks(preamble) {
   const blocks = [];
   let block = [];
@@ -388,9 +493,11 @@ async function renderOne({ preamble, equation, display, color, font_size, displa
 async function runDaemon() {
   // Pre-warm so the first real request is fast.
   MJ = await bootMathJax();
+  RESVG = await bootResvg();
   // Signal readiness to the parent. Snacks waits for this line before
-  // dispatching queued requests.
-  stdout.write(JSON.stringify({ ready: true }) + "\n");
+  // dispatching queued requests. `resvg` tells the plugin whether it can ask
+  // for PNGs directly instead of spawning a rasterizer per render.
+  stdout.write(JSON.stringify({ ready: true, resvg: RESVG !== null }) + "\n");
 
   const rl = createInterface({ input: stdin, terminal: false });
   for await (const line of rl) {
@@ -406,7 +513,23 @@ async function runDaemon() {
     if (req.quit) { exit(0); }
     try {
       const svg = await renderOne(req);
-      stdout.write(JSON.stringify({ id: req.id, ok: true, svg }) + "\n");
+      if (req.png && req.png.path && RESVG) {
+        // Write the PNG here rather than shipping it back over the pipe: the
+        // plugin hands snacks a file path anyway, and this keeps the response
+        // line small. The SVG is not returned either — nothing downstream
+        // reads it once the daemon has rasterized.
+        const { png, width, height } = rasterize(svg, {
+          density: req.png.density,
+          cellWidth: req.png.cell_width,
+          cellHeight: req.png.cell_height,
+        });
+        await fs.writeFile(req.png.path, png);
+        stdout.write(JSON.stringify({
+          id: req.id, ok: true, png: req.png.path, width, height,
+        }) + "\n");
+      } else {
+        stdout.write(JSON.stringify({ id: req.id, ok: true, svg }) + "\n");
+      }
     } catch (e) {
       stdout.write(JSON.stringify({
         id: req.id,
@@ -454,8 +577,16 @@ async function listPaths() {
   for (const c of candidates) stdout.write(c + "\n");
 }
 
+// Reports whether the optional in-process rasterizer resolves, so health.lua
+// does not have to mirror the resolution logic in Lua. Same reason
+// --list-paths exists for @mathjax/src.
+async function resvgStatus() {
+  stdout.write(((await bootResvg()) ? "ok" : "missing") + "\n");
+}
+
 async function main() {
   const opts = parseArgs(argv);
+  if (opts.resvgStatus) return resvgStatus();
   if (opts.listPaths) return listPaths();
   if (opts.daemon) return runDaemon();
   return runOneShot(opts);
