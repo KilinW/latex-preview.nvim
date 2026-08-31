@@ -393,6 +393,85 @@ local function png_size(png_path)
   return width, height
 end
 
+---Pixel density recorded in the PNG's pHYs chunk, as DPI. Returns 72, 72 when
+---the chunk is absent, which is what ImageMagick reports in that case and what
+---both rsvg-convert and resvg actually produce.
+---@param png_path string
+---@return integer, integer
+local function png_dpi(png_path)
+  local fd = io.open(png_path, "rb")
+  if not fd then return 72, 72 end
+  fd:seek("set", 8) -- past the signature
+  local dpi_x, dpi_y = 72, 72
+  for _ = 1, 16 do   -- pHYs is an early chunk; don't scan the whole image
+    local header = fd:read(8)
+    if not header or #header < 8 then break end
+    local len = header:byte(1) * 16777216 + header:byte(2) * 65536
+      + header:byte(3) * 256 + header:byte(4)
+    local typ = header:sub(5, 8)
+    if typ == "pHYs" then
+      local data = fd:read(9)
+      if data and #data == 9 and data:byte(9) == 1 then -- unit 1 = metre
+        local ppm_x = data:byte(1) * 16777216 + data:byte(2) * 65536
+          + data:byte(3) * 256 + data:byte(4)
+        local ppm_y = data:byte(5) * 16777216 + data:byte(6) * 65536
+          + data:byte(7) * 256 + data:byte(8)
+        if ppm_x > 0 then dpi_x = math.floor(ppm_x * 0.0254 + 0.5) end
+        if ppm_y > 0 then dpi_y = math.floor(ppm_y * 0.0254 + 0.5) end
+      end
+      break
+    end
+    if typ == "IDAT" then break end
+    fd:seek("cur", len + 4) -- chunk data + CRC
+  end
+  fd:close()
+  return dpi_x, dpi_y
+end
+
+---Write the metadata sidecar that snacks.image would otherwise shell out to
+---`magick identify` to produce.
+---
+---snacks skips any conversion step whose output file already exists, and its
+---identify step does nothing but parse this file. Writing it ourselves removes
+---one process spawn per image handed to snacks. That spawn measured 70-160ms
+---in a live session and became the dominant cost once the renderer itself was
+---fast: 116 spawns in one short editing session, against ~3ms to rasterize.
+---
+---This mirrors snacks' cache naming, so it is coupled to that. If the naming
+---changes the file simply will not match and snacks runs `magick` as before,
+---which is a slowdown rather than a breakage.
+---@param png_path string
+local function write_snacks_info(png_path)
+  local ok_snacks, snacks = pcall(require, "snacks")
+  if not ok_snacks or not snacks.image or not snacks.image.config then return end
+  local cache = snacks.image.config.cache
+  if not cache or cache == "" then return end
+  local ok_conv, conv = pcall(require, "snacks.image.convert")
+  if not ok_conv or type(conv.norm) ~= "function" or type(conv.get_page) ~= "function" then
+    return
+  end
+  local width, height = png_size(png_path)
+  if not width or not height then return end
+
+  -- Same order snacks uses in Convert.new: split the page suffix, then
+  -- normalise, then hash.
+  local src, page = conv.get_page(png_path)
+  src = conv.norm(src)
+  local base = vim.fn.fnamemodify(src, ":t:r"):gsub("[^%w%.]+", "-")
+  local prefix = vim.fn.sha256(src .. page):sub(1, 8) .. "-" .. base
+  local info_path = cache .. "/" .. prefix .. ".png.info"
+  if uv.fs_stat(info_path) then return end
+
+  local dpi_x, dpi_y = png_dpi(png_path)
+  vim.fn.mkdir(cache, "p")
+  local fd = io.open(info_path, "w")
+  if not fd then return end
+  -- Exactly the format snacks' identify step parses:
+  --   "%m %[fx:w]x%[fx:h] %xx%y"
+  fd:write(("PNG %dx%d %dx%d"):format(width, height, dpi_x, dpi_y))
+  fd:close()
+end
+
 ---Terminal cell dimensions in pixels, or nil when snacks cannot report them.
 ---@return integer?, integer?
 local function cell_size()
@@ -529,6 +608,9 @@ function M.render(req, cb)
   end
 
   local function finish(err, path)
+    -- Do this before waking the callers: whichever one hands the PNG to snacks
+    -- must find the sidecar already in place, or snacks spawns magick anyway.
+    if not err and path then pcall(write_snacks_info, path) end
     if use_reusable_temp and not err then schedule_temp_cache_limit_check() end
     if not can_reuse then return cb(err, path) end
     local callbacks = pending[png_path] or { cb }
@@ -607,6 +689,10 @@ function M.render(req, cb)
     end)
   end)
 end
+
+-- Exposed for tests: the sidecar's whole purpose is that snacks skips a
+-- process spawn when it exists, which can only be asserted against real snacks.
+M._write_snacks_info = write_snacks_info
 
 ---Clear the cache directory for a given buffer (defaults to current).
 ---Returns count of files removed. Note: with cache_dir = "aux", different
