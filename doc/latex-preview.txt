@@ -193,7 +193,10 @@ Default config: >lua
         display_math_style = "display",
         pad_to_cells = true,
         density = 300,
-        svg_to_png = "auto",
+        svg_to_png = "auto",   -- "auto"|"daemon"|"rsvg"|"magick"
+                               -- "auto"/"daemon": rasterize in the MathJax
+                               -- daemon when @resvg/resvg-js is installed.
+                               -- "rsvg"/"magick": force the external tool.
       },
 
       popup = {

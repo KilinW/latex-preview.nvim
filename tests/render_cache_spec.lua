@@ -308,7 +308,20 @@ assert_info_maps_to_image(temp_dir)
 -- The fake `magick` above writes the 3 bytes "png", and the daemon stub writes
 -- "fake png", so the file's contents say which path actually ran.
 daemon_has_resvg = true
+
+-- Forcing an external tool must opt out even when the daemon could rasterize.
+-- This is the supported off switch, so it gets an assertion rather than a
+-- comment: config here is still svg_to_png = "magick" from setup() above.
 daemon_calls = 0
+daemon_png_requests = {}
+render_once("external rasterizer forced by config")
+assert_eq(1, daemon_calls, "forcing an external rasterizer should still call the daemon")
+assert_eq(0, #daemon_png_requests,
+  'render.svg_to_png = "magick" should stop render.lua asking the daemon to rasterize')
+
+config.options.render.svg_to_png = "auto"
+daemon_calls = 0
+daemon_png_requests = {}
 local resvg_path = render_once("in daemon rasterizer")
 assert_eq(1, daemon_calls, "daemon-rasterized render should still call the daemon once")
 assert_eq(1, #daemon_png_requests, "render.lua should pass a png request when the daemon can rasterize")
@@ -322,6 +335,7 @@ assert_eq("fake png", resvg_body, "the daemon's png should be used verbatim, not
 assert_true(not uv.fs_stat((resvg_path:gsub("%.png$", ".svg"))),
   "the daemon-rasterized path should not write an intermediate svg")
 daemon_has_resvg = false
+config.options.render.svg_to_png = "magick"
 
 local snacks_cache = root .. "/snacks-cache"
 vim.fn.mkdir(snacks_cache, "p")

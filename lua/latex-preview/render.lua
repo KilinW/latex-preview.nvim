@@ -308,14 +308,25 @@ local function spawn(cmd, args, cb)
   end)
 end
 
----Resolve which rasterizer will actually be used.
+---Resolve which *external* rasterizer will be used. Only reached when the
+---daemon is not rasterizing, so "daemon" resolves the same way "auto" does.
 ---@return "rsvg"|"magick"
 local function resolve_tool()
   local tool = config.options.render.svg_to_png
-  if tool == "auto" then
+  if tool == "auto" or tool == "daemon" then
     tool = vim.fn.executable("rsvg-convert") == 1 and "rsvg" or "magick"
   end
   return tool
+end
+
+---Whether to ask the daemon to rasterize in-process. Setting svg_to_png to a
+---specific external tool turns this off, which is the supported way to compare
+---the two paths or to sidestep resvg entirely.
+---@return boolean
+local function use_daemon_rasterizer()
+  local tool = config.options.render.svg_to_png
+  if tool ~= "auto" and tool ~= "daemon" then return false end
+  return daemon.has_resvg()
 end
 
 ---Convert SVG file to PNG file via the configured tool.
@@ -541,9 +552,9 @@ function M.render(req, cb)
   -- that startup is paid on every keystroke during live preview. Going through
   -- the daemon also removes the intermediate SVG file and one process spawn.
   -- Only available once the daemon is up, so the first render of a session
-  -- still takes the path below.
+  -- still takes the path below. render.svg_to_png = "rsvg"/"magick" opts out.
   local png_req = nil
-  if daemon.has_resvg() then
+  if use_daemon_rasterizer() then
     png_req = { path = png_path, density = density }
     if should_pad_to_cells(req) then
       local cw, ch = cell_size()

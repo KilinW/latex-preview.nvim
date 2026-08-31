@@ -190,6 +190,11 @@ end
 -- duplicate the candidate path list in Lua.
 local function check_daemon_rasterizer(script_path)
   if not script_path or vim.fn.executable("node") ~= 1 then return end
+  local tool = config.options.render.svg_to_png
+  if tool ~= "auto" and tool ~= "daemon" then
+    report_ok(('in-process rasterizer disabled by render.svg_to_png = "%s"'):format(tool))
+    return
+  end
   local out = vim.fn.system({ "node", script_path, "--resvg-status" })
   if vim.v.shell_error == 0 and out:match("^ok") then
     report_ok("daemon rasterizer: @resvg/resvg-js (in-process)")
