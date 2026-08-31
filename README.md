@@ -60,6 +60,30 @@ fine for occasional preview but too slow for live editing.
 - **A graphics-capable terminal**: Kitty, iTerm2, WezTerm, or Ghostty
 - **`@mathjax/src` 4.x** (npm): `npm install -g @mathjax/src@4`
 - **An SVG rasterizer**: `rsvg-convert` / librsvg (**strongly recommended** — handles MathJax SVG and `currentColor` correctly); ImageMagick is a fallback but may silently produce blank or corrupt output on complex equations
+- **`@resvg/resvg-js`** (npm, optional but wanted for live preview): lets the daemon rasterize in-process — see below
+
+### Faster live preview: `@resvg/resvg-js`
+
+Spawning `rsvg-convert` costs about 18.5ms of process startup and library
+loading against roughly 0.8ms of actual rasterization at equation sizes, and
+live preview pays that on every keystroke. Installing `@resvg/resvg-js` in the
+plugin directory lets the MathJax daemon rasterize in-process instead: one
+request returns a finished PNG, with no intermediate SVG file and no second
+process.
+
+```sh
+cd /path/to/latex-preview.nvim && npm install
+```
+
+With lazy.nvim, let the plugin manager do it:
+
+```lua
+build = "npm install --no-audit --no-fund",
+```
+
+It is entirely optional. Without it the daemon returns SVG and the
+`rsvg-convert` / ImageMagick path runs exactly as before.
+`:checkhealth latex-preview` reports which one is active.
 
 ### Linux
 
@@ -98,6 +122,7 @@ by the daemon or `:checkhealth latex-preview`.
   "your-username/latex-preview.nvim",
   dependencies = { "folke/snacks.nvim" },
   ft = { "tex", "latex", "markdown", "rmd", "quarto" },
+  build = "npm install --no-audit --no-fund",  -- optional; see Requirements
   opts = {
     setup_keymap = true,   -- bind <leader>ih in supported filetypes
     cache = true,          -- persist renders to disk
