@@ -319,7 +319,21 @@ assert_eq(1, daemon_calls, "forcing an external rasterizer should still call the
 assert_eq(0, #daemon_png_requests,
   'render.svg_to_png = "magick" should stop render.lua asking the daemon to rasterize')
 
+-- "auto" must not opt in either: the in-process path is explicit-only. Hide
+-- the real rsvg-convert for this one render so "auto" resolves to the fake
+-- `magick` in fake_bin instead of shelling out to a binary that would choke on
+-- the stub "<svg></svg>".
+local saved_path = vim.env.PATH
+vim.env.PATH = fake_bin
+daemon_calls = 0
+daemon_png_requests = {}
 config.options.render.svg_to_png = "auto"
+render_once("auto should not use the daemon rasterizer")
+assert_eq(0, #daemon_png_requests,
+  '"auto" should keep rasterizing externally, not in the daemon')
+vim.env.PATH = saved_path
+
+config.options.render.svg_to_png = "daemon"
 daemon_calls = 0
 daemon_png_requests = {}
 local resvg_path = render_once("in daemon rasterizer")

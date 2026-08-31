@@ -319,13 +319,21 @@ local function resolve_tool()
   return tool
 end
 
----Whether to ask the daemon to rasterize in-process. Setting svg_to_png to a
----specific external tool turns this off, which is the supported way to compare
----the two paths or to sidestep resvg entirely.
+---Whether to ask the daemon to rasterize in-process. Opt-in only: "auto" does
+---NOT choose it.
+---
+---In-process rasterization wins when requests arrive one at a time, but it
+---serializes MathJax and rasterization onto the daemon's single thread. With
+---an external rasterizer the two overlap across requests, because rsvg-convert
+---runs in its own process while node typesets the next equation. Measured in a
+---real editing session, moving the work inside the daemon took the round trip
+---from 49.6ms median / 94.9ms p90 to 772.5ms / 3896ms, with outstanding
+---requests peaking at 34 instead of 3. Fast typing without request
+---cancellation turns the extra per-request cost into a queue, and the queue
+---dominates everything else.
 ---@return boolean
 local function use_daemon_rasterizer()
-  local tool = config.options.render.svg_to_png
-  if tool ~= "auto" and tool ~= "daemon" then return false end
+  if config.options.render.svg_to_png ~= "daemon" then return false end
   return daemon.has_resvg()
 end
 

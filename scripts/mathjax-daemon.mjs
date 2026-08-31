@@ -512,7 +512,9 @@ async function runDaemon() {
     }
     if (req.quit) { exit(0); }
     try {
+      const t0 = process.hrtime.bigint();
       const svg = await renderOne(req);
+      const t1 = process.hrtime.bigint();
       if (req.png && req.png.path && RESVG) {
         // Write the PNG here rather than shipping it back over the pipe: the
         // plugin hands snacks a file path anyway, and this keeps the response
@@ -523,12 +525,23 @@ async function runDaemon() {
           cellWidth: req.png.cell_width,
           cellHeight: req.png.cell_height,
         });
+        const t2 = process.hrtime.bigint();
         await fs.writeFile(req.png.path, png);
+        const t3 = process.hrtime.bigint();
+        // Per-stage cost, so a slow round trip can be attributed instead of
+        // guessed at. Rasterizing here shares one thread with the typeset
+        // above, which is exactly what makes this path queue up under load.
         stdout.write(JSON.stringify({
           id: req.id, ok: true, png: req.png.path, width, height,
+          ms_typeset: Number(t1 - t0) / 1e6,
+          ms_raster: Number(t2 - t1) / 1e6,
+          ms_write: Number(t3 - t2) / 1e6,
         }) + "\n");
       } else {
-        stdout.write(JSON.stringify({ id: req.id, ok: true, svg }) + "\n");
+        stdout.write(JSON.stringify({
+          id: req.id, ok: true, svg,
+          ms_typeset: Number(t1 - t0) / 1e6,
+        }) + "\n");
       }
     } catch (e) {
       stdout.write(JSON.stringify({

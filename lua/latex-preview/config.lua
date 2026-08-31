@@ -42,9 +42,10 @@ local M = {}
 ---@field pad_to_cells boolean Pad PNGs to terminal-cell multiples to prevent terminal upscaling.
 ---@field density integer ImageMagick density (DPI) for SVG -> PNG.
 ---@field svg_to_png "auto"|"daemon"|"magick"|"rsvg" Tool used to rasterize.
----  "auto"   — the daemon's in-process resvg when available, else rsvg-convert, else ImageMagick.
----  "daemon" — same as "auto"; states the preference explicitly.
----  "rsvg" / "magick" — force an external tool and never rasterize in the daemon.
+---  "auto"   — rsvg-convert when present, else ImageMagick.
+---  "rsvg" / "magick" — force one of those.
+---  "daemon" — rasterize inside the MathJax daemon (needs @resvg/resvg-js).
+---    Opt-in, and slower than it sounds while typing: see the note on defaults.
 
 ---@class LatexPreview.PopupConfig
 ---@field max_width integer? Maximum popup image width in terminal cells. Default: editor width minus padding.
@@ -118,12 +119,17 @@ M.defaults = {
     display_math_style = "display",
     pad_to_cells = true,
     density = 300,
-    -- "auto" prefers rasterizing inside the MathJax daemon (needs
-    -- @resvg/resvg-js): one request returns a finished PNG, with no
-    -- intermediate SVG file and no rsvg-convert spawn. That spawn costs
-    -- ~18.5ms of library loading against ~0.8ms of actual work, which live
-    -- preview would otherwise pay on every keystroke. Set "rsvg" or "magick"
-    -- to force the external tool and keep the daemon returning SVG.
+    -- "auto" picks rsvg-convert, else ImageMagick.
+    --
+    -- "daemon" rasterizes in-process (needs @resvg/resvg-js), which removes
+    -- rsvg-convert's ~18.5ms of library loading per render. That is a real win
+    -- for one-off renders, but it is NOT the default, because it also puts
+    -- MathJax and rasterization on the same single thread. An external
+    -- rasterizer overlaps with the next typeset; an in-process one does not.
+    -- Measured while typing, "daemon" took the round trip from 49.6ms median
+    -- to 772.5ms, with the request backlog peaking at 34 instead of 3. Until
+    -- superseded requests can be cancelled, the queue costs far more than the
+    -- spawn ever did.
     svg_to_png = "auto",
   },
 
