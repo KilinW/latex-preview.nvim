@@ -160,6 +160,11 @@ const TEX_PACKAGE_EXCLUDES = new Set([
   "colorv2",
   // This redefines common macros like \sin and \div, so don't enable it globally.
   "physics",
+  // These override \mathbb and \mathbbm with variants whose fonts ship
+  // separately. Without those fonts MathJax reports "Invalid variant" and
+  // falls back to upright ASCII instead of double-struck glyphs.
+  "bboldx",
+  "bbm",
 ]);
 
 function readPackageInfo(fsSync, path, dir) {
